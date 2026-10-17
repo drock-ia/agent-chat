@@ -510,7 +510,7 @@ chat.addEventListener("scroll", () => {
 });
 $("jumpBtn").addEventListener("click", () => { atBottom = true; scrollBottom(); });
 
-function appendMsg(agent, text, ts){
+function appendMsg(agent, text, ts, isHistory){
   if (atBottom) scrollBottom();
   const dayKey = new Date(ts * 1000).toDateString();
   if (dayKey !== lastDayKey){
@@ -537,8 +537,11 @@ function appendMsg(agent, text, ts){
   el.appendChild(av); el.appendChild(b);
   chat.appendChild(el);
   while (chat.children.length > 260) chat.removeChild(chat.firstChild);
-  msgCount++;
-  $("statMsgs").textContent = msgCount;
+  if (!isHistory){
+    msgCount++;
+    $("statMsgs").textContent = msgCount;
+    try { localStorage.setItem("chatMsgCount", String(msgCount)); } catch(e){}
+  }
   if (atBottom) scrollBottom();
 }
 
@@ -594,8 +597,14 @@ function renderHistory(){
   if (start > 0 && !turnCache.has(start - 1)) turnAt(start - 1);
   for (let i = start; i <= currentTurn(); i++){
     const t = turnAt(i);
-    appendMsg(AGENTS[t.speakerIdx], t.text, t.ts);
+    appendMsg(AGENTS[t.speakerIdx], t.text, t.ts, true);
   }
+  // contador de mensagens: não zera ao recarregar — continua de onde parou
+  // (guardado no navegador) e nunca fica abaixo das mensagens visíveis na sala
+  let saved = 0;
+  try { saved = parseInt(localStorage.getItem("chatMsgCount") || "0", 10) || 0; } catch(e){}
+  msgCount = Math.max(saved, currentTurn() - start + 1);
+  $("statMsgs").textContent = msgCount;
 }
 
 let nextTurnIdx = 0;
