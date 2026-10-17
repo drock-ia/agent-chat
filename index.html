@@ -198,6 +198,17 @@
   }
   #jumpBtn.show { opacity: 1; pointer-events: auto; }
 
+  #moltTop {
+    position: absolute; right: 26px; bottom: 84px; z-index: 4;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border-strong);
+    padding: 8px 16px; border-radius: 999px; cursor: pointer; font-size: .76rem; font-weight: 600;
+    opacity: 0; pointer-events: none; transition: opacity .25s;
+    backdrop-filter: blur(8px);
+    display: none;
+  }
+  #moltTop.show { opacity: 1; pointer-events: auto; }
+  body.mode-molt #moltTop { display: block; }
+
   /* ---------- footer ---------- */
   footer {
     padding: 12px 24px; border-top: 1px solid var(--border);
@@ -259,6 +270,7 @@
   #moltList {
     flex: 1; overflow-y: auto; padding: 26px 30px 20px;
     display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: #273350 transparent;
   }
   #moltList::-webkit-scrollbar { width: 9px; }
   #moltList::-webkit-scrollbar-thumb { background: #1d2739; border-radius: 8px; }
@@ -269,7 +281,13 @@
     font-family: "JetBrains Mono", monospace;
   }
   .ptitle { font-weight: 700; font-size: .93rem; margin-top: 5px; color: var(--text); }
-  .pbody { font-size: .82rem; color: var(--muted); margin-top: 4px; line-height: 1.55; }
+  .pbody {
+    font-size: .82rem; color: var(--muted); margin-top: 4px; line-height: 1.55;
+    max-height: 210px; overflow-y: auto; padding-right: 6px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .pbody::-webkit-scrollbar { width: 6px; }
+  .pbody::-webkit-scrollbar-thumb { background: #1d2739; border-radius: 6px; }
   .pfoot { margin-top: 9px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .pfoot a { color: var(--accent); text-decoration: none; font-weight: 600; font-size: .7rem; }
   .pfoot a:hover { text-decoration: underline; }
@@ -311,6 +329,7 @@
     .molt-title small { display: none; }
     #moltList { padding: 18px 16px 16px; }
     .molt-status { padding: 9px 16px; }
+    #moltTop { right: 16px; bottom: 42px; }
   }
   #menuBtn {
     display: none; width: 38px; height: 38px; place-items: center;
@@ -377,12 +396,14 @@
             <button class="seg-btn" data-sort="new" type="button">🆕 Recentes</button>
           </div>
           <button id="moltRefresh" class="seg-btn" type="button" title="Atualizar o feed agora">↻ Atualizar</button>
+          <button id="moltTr" class="seg-btn" type="button" title="Traduzir os posts para português do Brasil">🌐 PT-BR</button>
         </div>
       </div>
       <div id="moltList"></div>
       <div class="molt-status" id="moltStatus"></div>
     </div>
     <button id="jumpBtn">↓ Novas mensagens</button>
+    <button id="moltTop">⬆ Voltar ao topo</button>
     <footer>
       <div class="readonly-note">
         <span class="lock">🔒</span>
@@ -1091,6 +1112,8 @@ const MOLT_COLORS = ["#a78bfa","#38bdf8","#fbbf24","#46d19a","#f472b6","#fb7185"
 
 let moltSort = "hot";
 let moltPosts = [];
+let moltTranslate = true;
+try { moltTranslate = localStorage.getItem("moltbook_tr_on") !== "0"; } catch (e) {}
 let moltLoading = false;
 let moltInited = false;
 
@@ -1127,6 +1150,57 @@ function trimBody(raw, max){
     .replace(/\s+/g, " ").trim();
   if (s.length > max) s = s.slice(0, max).replace(/\s+\S*$/, "") + "…";
   return s;
+}
+
+/* ---------- tradução automática dos posts para português do Brasil ---------- */
+let moltTrCache = (function(){
+  try { const c = JSON.parse(localStorage.getItem("moltbook_tr_v1") || "{}"); return (c && typeof c === "object") ? c : {}; }
+  catch (e) { return {}; }
+})();
+function moltTrSave(){
+  try {
+    if (Object.keys(moltTrCache).length > 500) moltTrCache = {};   // evita estourar o localStorage
+    localStorage.setItem("moltbook_tr_v1", JSON.stringify(moltTrCache));
+  } catch (e) {}
+}
+function gtx(text){
+  const url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=pt-BR&dt=t&q=" + encodeURIComponent(text);
+  return fetch(url, { cache: "no-store" })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(j => (j && j[0] || []).map(s => (s && s[0]) || "").join("").trim());
+}
+
+let moltTranslating = false;
+async function moltTranslateAll(){
+  if (!moltTranslate || moltTranslating || !moltPosts.length) return;
+  const jobs = [];
+  moltPosts.forEach(p => {
+    if (moltTrCache[p.id]) return;
+    const title = String(p.title || "").trim();
+    const body  = trimBody(p.content, 1200);
+    if (title) jobs.push({ id: p.id, f: "ti", text: title });
+    if (body)  jobs.push({ id: p.id, f: "bo", text: body });
+  });
+  if (!jobs.length){ moltRender(); return; }
+  moltTranslating = true;
+  moltStatus("🌐 traduzindo os posts para português do Brasil…");
+  let ok = 0, falhas = 0;
+  const worker = async () => {
+    while (jobs.length){
+      const j = jobs.shift();
+      try {
+        const out = await gtx(j.text);
+        const e = moltTrCache[j.id] || (moltTrCache[j.id] = {});
+        e[j.f] = out;
+        ok++;
+      } catch (err) { falhas++; }
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  moltTrSave();
+  moltTranslating = false;
+  if (ok > 0) moltRender();
+  else moltStatus("🌐 não consegui traduzir agora (" + falhas + " tentativas falharam) — mostrando os posts originais.");
 }
 
 function moltCacheRead(){
@@ -1181,12 +1255,13 @@ function moltCard(p){
 
   b.appendChild(who); b.appendChild(kb); b.appendChild(tm);
 
+  const tr = moltTranslate ? (moltTrCache[p.id] || null) : null;
   if (p.title){
     const t = document.createElement("div");
-    t.className = "ptitle"; t.textContent = p.title;
+    t.className = "ptitle"; t.textContent = (tr && tr.ti) || p.title;
     b.appendChild(t);
   }
-  const body = trimBody(p.content);
+  const body = (tr && tr.bo) || trimBody(p.content, 1200);
   if (body){
     const d = document.createElement("div");
     d.className = "pbody"; d.textContent = body;
@@ -1202,6 +1277,11 @@ function moltCard(p){
   const c1 = document.createElement("span"); c1.className = "chip"; c1.textContent = "💬 " + fmtNum(p.comment_count) + " comentários";
   const c2 = document.createElement("span"); c2.className = "chip"; c2.textContent = "▲ " + fmtNum(p.score) + " pontos";
   foot.appendChild(link); foot.appendChild(c1); foot.appendChild(c2);
+  if (tr){
+    const c3 = document.createElement("span");
+    c3.className = "chip"; c3.textContent = "🌐 traduzido";
+    foot.appendChild(c3);
+  }
   b.appendChild(foot);
 
   el.appendChild(avEl); el.appendChild(b);
@@ -1249,7 +1329,8 @@ function moltRender(){
   moltListEl.appendChild(frag);
   moltRenderAgents();
   const t = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  moltStatus("feed real do Moltbook · atualizado às " + t);
+  const trQtd = moltTranslate ? moltPosts.filter(p => moltTrCache[p.id]).length : 0;
+  moltStatus("feed real do Moltbook · atualizado às " + t + (trQtd ? " · 🌐 traduzido para pt-BR" : ""));
 }
 
 function moltFetch(){
@@ -1268,6 +1349,7 @@ function moltFetch(){
       moltPosts = data.posts.filter(p => p && !p.is_deleted);
       moltCacheWrite();
       moltRender();
+      moltTranslateAll();
     })
     .catch(err => {
       const c = moltCacheRead();
@@ -1284,16 +1366,24 @@ function moltFetch(){
 function syncSortUI(){
   document.querySelectorAll("#moltSortSeg .seg-btn").forEach(x => x.classList.toggle("active", x.dataset.sort === moltSort));
 }
+function syncTrUI(){
+  const b = $("moltTr");
+  if (!b) return;
+  b.textContent = moltTranslate ? "🌐 PT-BR" : "🌐 Original";
+  b.classList.toggle("active", moltTranslate);
+}
 
 function moltInit(){
   if (moltInited) return;
   moltInited = true;
+  syncTrUI();
   const c = moltCacheRead();
   if (c && c.posts.length && Date.now() - c.ts < MOLT_TTL){
     moltPosts = c.posts;
     moltSort = c.sort || moltSort;
     syncSortUI();
     moltRender();
+    moltTranslateAll();
   } else {
     moltFetch();
   }
@@ -1324,6 +1414,17 @@ $("moltSortSeg").addEventListener("click", (e) => {
   moltFetch();
 });
 $("moltRefresh").addEventListener("click", () => moltFetch());
+$("moltTr").addEventListener("click", () => {
+  moltTranslate = !moltTranslate;
+  try { localStorage.setItem("moltbook_tr_on", moltTranslate ? "1" : "0"); } catch (e) {}
+  syncTrUI();
+  moltRender();
+  if (moltTranslate) moltTranslateAll();
+});
+moltListEl.addEventListener("scroll", () => {
+  $("moltTop").classList.toggle("show", moltListEl.scrollTop > 400);
+});
+$("moltTop").addEventListener("click", () => moltListEl.scrollTo({ top: 0, behavior: "smooth" }));
 
 /* ---------- start ---------- */
 renderHistory();
